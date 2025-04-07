@@ -26,6 +26,8 @@ export default function Callback({ onLogin }) {
         navigate('/');
       } catch (error) {
         console.error('OAuth callback failed:', error);
+        localStorage.removeItem('accessToken'); // 🧹 Clear invalid token
+        navigate('/'); // Optionally redirect
       }
     };
 

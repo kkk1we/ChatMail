@@ -19,6 +19,13 @@
   margin-top: 20px;
 }
 
+.email-content {
+  max-width: 700px;
+  overflow-x: auto;
+  line-height: 1.6;
+  font-size: 0.95em;
+}
+
 .email-item {
   padding: 15px;
   border: 1px solid #ddd;
