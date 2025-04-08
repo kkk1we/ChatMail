@@ -1,38 +1,51 @@
 
-// ✅ Callback.jsx
-import { useEffect } from 'react';
-import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
-console.log('test')
+import axios from 'axios';
+
+import { useEffect, useRef } from 'react';
+
 export default function Callback({ onLogin }) {
   const navigate = useNavigate();
+  const hasRun = useRef(false);
 
   useEffect(() => {
+    if (hasRun.current) return;
+    hasRun.current = true;
+
     const code = new URLSearchParams(window.location.search).get('code');
     console.log("🔍 Code param:", code);
 
     const handleOAuthRedirect = async () => {
-      const code = new URLSearchParams(window.location.search).get('code');
-      if (!code) return;
+      if (!code) {
+        console.error("❌ No code parameter in URL");
+        navigate('/');
+        return;
+      }
 
       try {
-        const res = await axios.get(`http://localhost:5000/api/oauth2callback?code=${code}`);
-        const accessToken = res.data.tokens?.access_token;
+        const res = await axios.get('http://localhost:5000/api/oauth2callback', {
+          params: { code },
+          withCredentials: true,
+        });
 
-        console.log('✅ Access Token:', accessToken);
-        localStorage.setItem('accessToken', accessToken);
-        onLogin({ accessToken });
+        console.log('✅ OAuth callback response:', res.data);
 
-        navigate('/');
+        if (res.data?.message === 'Login successful') {
+          window.history.replaceState({}, document.title, '/');
+          onLogin?.();
+          navigate('/');
+        } else {
+          console.error("❌ Unexpected response:", res.data);
+          navigate('/');
+        }
       } catch (error) {
-        console.error('OAuth callback failed:', error);
-        localStorage.removeItem('accessToken'); // 🧹 Clear invalid token
-        navigate('/'); // Optionally redirect
+        console.error("❌ OAuth callback failed:", error);
+        navigate('/');
       }
     };
 
     handleOAuthRedirect();
-  }, []);
+  }, [navigate, onLogin]);
 
-  return <p>Logging you in...</p>;
+  return <p>🔄 Logging you in...</p>;
 }
