@@ -104,4 +104,28 @@
   .tiptap-toolbar button:hover {
     background: #eee;
   }
-  
+  /* Add this to your CSS file */
+/* Add this to your CSS file or inline styles in React */
+.message {
+  display: flex;
+  flex-direction: row;
+  justify-content: flex-start;  /* Align to left for others */
+  max-width: 75%;
+  padding: 10px;
+  border-radius: 10px;
+  margin: 5px 0;
+}
+
+.message.sent {
+  flex-direction: row-reverse;  /* Align to right for you (sent) */
+  background-color: #dcf8c6;
+  border: 1px solid #a2d5a2;
+  text-align: right;
+}
+
+.message.received {
+  background-color: #fff;
+  border: 1px solid #ccc;
+  text-align: left;
+}
+
