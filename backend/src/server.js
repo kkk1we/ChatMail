@@ -46,7 +46,16 @@ const extractBodyFromPayload = (payload) => {
     if (!node) return '';
 
     if (node.mimeType === 'text/html' && node.body?.data) {
-      return decodeBase64(node.body.data);
+      let html = decodeBase64(node.body.data);
+      
+      // Replace CID image URLs
+      html = html.replace(/src="cid:([^"]+)"/gi, (match, cidContent) => {
+        // You might want to implement a method to resolve CID images
+        // For now, we'll remove the src attribute
+        return 'src=""';
+      });
+
+      return html;
     }
 
     if (node.parts && Array.isArray(node.parts)) {
@@ -70,7 +79,79 @@ const extractBodyFromPayload = (payload) => {
   return '';
 };
 
+const processEmailAttachments = (payload) => {
+  const attachments = [];
+  
+  const findAttachments = (node) => {
+    if (node.parts) {
+      node.parts.forEach(part => {
+        if (part.filename || part.body?.attachmentId) {
+          attachments.push({
+            filename: part.filename,
+            mimeType: part.mimeType,
+            body: part.body
+          });
+        }
+        findAttachments(part);
+      });
+    }
+  };
 
+  findAttachments(payload);
+  return attachments;
+};
+
+const replaceInlineImages = async (gmail, html, payload) => {
+  const cidMap = {};
+  
+  const findInlineImages = (node) => {
+    if (node.parts) {
+      node.parts.forEach(part => {
+        if (part.body?.attachmentId && part.headers?.some(h => h.name.toLowerCase() === 'content-id')) {
+          const cidHeader = part.headers.find(h => h.name.toLowerCase() === 'content-id');
+          const cid = cidHeader.value.replace(/[<>]/g, '');
+          cidMap[cid] = part.body.attachmentId;
+        }
+        findInlineImages(part);
+      });
+    }
+  };
+
+  const fetchAttachmentData = async (attachmentId, messageId) => {
+    try {
+      const { data } = await gmail.users.messages.attachments.get({
+        userId: 'me',
+        messageId: messageId,
+        id: attachmentId
+      });
+      return data;
+    } catch (error) {
+      console.error('Failed to fetch attachment:', error);
+      return null;
+    }
+  };
+
+  findInlineImages(payload);
+
+  // Replace CID URLs with base64 data URIs
+  let processedHtml = html;
+  for (const [cid, attachmentId] of Object.entries(cidMap)) {
+    try {
+      const attachmentData = await fetchAttachmentData(attachmentId, payload.id);
+      if (attachmentData) {
+        const regex = new RegExp(`src="cid:${cid}"`, 'gi');
+        processedHtml = processedHtml.replace(
+          regex, 
+          `src="data:image/jpeg;base64,${attachmentData}"`
+        );
+      }
+    } catch (error) {
+      console.error(`Failed to process CID ${cid}:`, error);
+    }
+  }
+
+  return processedHtml;
+};
 app.get('/api/oauth2callback', async (req, res) => {
   const { code } = req.query;
 
@@ -662,13 +743,24 @@ app.post('/api/email-threads', async (req, res) => {
               id: thread.id,
             });
 
-            const messages = fullThread.messages.map((msg) => {
+            const messages = await Promise.all(fullThread.messages.map(async (msg) => {
               const headers = msg.payload.headers;
               const from = headers.find(h => h.name === 'From')?.value || 'Unknown sender';
               const to = headers.find(h => h.name === 'To')?.value || 'Unknown recipient';
               const subject = headers.find(h => h.name === 'Subject')?.value || '(no subject)';
               const date = new Date(parseInt(msg.internalDate)).toISOString();
-              const body = extractBodyFromPayload(msg.payload);
+              
+              let body = extractBodyFromPayload(msg.payload);
+              
+              // Process inline images
+              try {
+                body = await replaceInlineImages(gmail, body, {
+                  ...msg.payload,
+                  id: msg.id
+                });
+              } catch (imageError) {
+                console.error('Image processing error:', imageError);
+              }
 
               return { 
                 id: msg.id,
@@ -679,7 +771,7 @@ app.post('/api/email-threads', async (req, res) => {
                 body,
                 type: 'from'
               };
-            });
+            }));
 
             return {
               id: thread.id,
@@ -693,7 +785,7 @@ app.post('/api/email-threads', async (req, res) => {
       }
     }
 
-    // Fetch threads for "to" emails
+    // Similar modification for "to" emails section
     for (const email of toEmails) {
       const { data: threadList } = await gmail.users.threads.list({
         userId: 'me',
@@ -709,13 +801,24 @@ app.post('/api/email-threads', async (req, res) => {
               id: thread.id,
             });
 
-            const messages = fullThread.messages.map((msg) => {
+            const messages = await Promise.all(fullThread.messages.map(async (msg) => {
               const headers = msg.payload.headers;
               const from = headers.find(h => h.name === 'From')?.value || 'Unknown sender';
               const to = headers.find(h => h.name === 'To')?.value || 'Unknown recipient';
               const subject = headers.find(h => h.name === 'Subject')?.value || '(no subject)';
               const date = new Date(parseInt(msg.internalDate)).toISOString();
-              const body = extractBodyFromPayload(msg.payload);
+              
+              let body = extractBodyFromPayload(msg.payload);
+              
+              // Process inline images
+              try {
+                body = await replaceInlineImages(gmail, body, {
+                  ...msg.payload,
+                  id: msg.id
+                });
+              } catch (imageError) {
+                console.error('Image processing error:', imageError);
+              }
 
               return { 
                 id: msg.id,
@@ -726,7 +829,7 @@ app.post('/api/email-threads', async (req, res) => {
                 body,
                 type: 'to'
               };
-            });
+            }));
 
             return {
               id: thread.id,

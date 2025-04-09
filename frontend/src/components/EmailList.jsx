@@ -14,9 +14,9 @@ const cleanBody = (html) => {
     .replace(/<blockquote[^>]*>[\s\S]*?<\/blockquote>/gi, '')
     .replace(/&nbsp;/g, ' ')
     .replace(/\s{2,}/g, ' ')
+    .replace(/src="cid:[^"]+"/gi, 'src=""')  // Remove CID image sources
     .trim();
 };
-
 const getDateLabel = (dateStr) => {
   const date = new Date(dateStr);
   const today = new Date();
@@ -89,22 +89,39 @@ export default function EmailList({ token }) {
 
     fetchProfile();
   }, []);
-  const fetchFollowedEmails = async (emailsToFetch = followEmails) => {
+  const fetchFollowedEmails = async () => {
     try {
-      // First ensure we have the latest list of followed emails
       const res = await axios.get('http://localhost:5000/api/followed-emails', {
         withCredentials: true,
       });
-      if (res.data && Array.isArray(res.data.followedEmails)) {
-        setFollowEmails(res.data.followedEmails);
+      
+      if (res.data) {
+        setFollowFromEmails(res.data.followedFromEmails || []);
+        setFollowToEmails(res.data.followedToEmails || []);
       }
       
-      // Then fetch the actual email content for these addresses
-      setIsLoading(true); // Add this state variable to track loading state
+      // Fetch email threads for both from and to emails
+      await fetchEmailThreads(
+        res.data.followedFromEmails || [], 
+        res.data.followedToEmails || []
+      );
+    } catch (error) {
+      console.error('Failed to fetch followed emails:', error);
+    }
+  };
+
+  // Fetch emails for followed addresses
+  useEffect(() => {
+    fetchFollowedEmails();
+  }, []);
+  // Add new method to fetch email threads
+  const fetchEmailThreads = async (fromEmails, toEmails) => {
+    try {
+      setIsLoading(true);
       
-      // Fetch email threads for the followed emails
       const threadsRes = await axios.post('http://localhost:5000/api/email-threads', {
-        emails: emailsToFetch
+        fromEmails,
+        toEmails
       }, {
         withCredentials: true,
       });
@@ -113,8 +130,11 @@ export default function EmailList({ token }) {
         // Group emails by sender
         const groupedThreads = {};
         threadsRes.data.threads.forEach(thread => {
-          // Assuming the first message's from field contains the sender
-          const sender = thread.messages[0].from;
+          // Group by sender based on the thread type
+          const sender = thread.messages[0].type === 'from' 
+            ? thread.messages[0].from 
+            : thread.messages[0].to;
+          
           if (!groupedThreads[sender]) {
             groupedThreads[sender] = [];
           }
@@ -130,27 +150,57 @@ export default function EmailList({ token }) {
       setIsLoading(false);
     }
   };
-  // Fetch emails for followed addresses
-  useEffect(() => {
-    fetchFollowedEmails();
-  }, []);
-  
   // Update handleAddEmail to save to database
+  const handleAddFromEmail = () => {
+    if (emailInputFrom && !followFromEmails.includes(emailInputFrom)) {
+      axios.post('http://localhost:5000/api/follow-from-email', {
+        email: emailInputFrom
+      }, {
+        withCredentials: true,
+      })
+      .then(response => {
+        setFollowFromEmails(response.data.followedFromEmails);
+        setEmailInputFrom('');
+        fetchEmailThreads(response.data.followedFromEmails, followToEmails);
+      })
+      .catch(error => {
+        console.error('Failed to add from email:', error);
+      });
+    }
+  };
+
+  const handleAddToEmail = () => {
+    if (emailInputTo && !followToEmails.includes(emailInputTo)) {
+      axios.post('http://localhost:5000/api/follow-to-email', {
+        email: emailInputTo
+      }, {
+        withCredentials: true,
+      })
+      .then(response => {
+        setFollowToEmails(response.data.followedToEmails);
+        setEmailInputTo('');
+        fetchEmailThreads(followFromEmails, response.data.followedToEmails);
+      })
+      .catch(error => {
+        console.error('Failed to add to email:', error);
+      });
+    }
+  };
   const handleAddEmail = () => {
-    if (emailInput && !followEmails.includes(emailInput)) {
-      const newFollowEmails = [...followEmails, emailInput];
-      setFollowEmails(newFollowEmails);
+    if (emailInput && !followFromEmails.includes(emailInput)) {
+      const newFollowEmails = [...followFromEmails, emailInput];
+      setFollowFromEmails(newFollowEmails);
       setEmailInput('');
       
       // Save to backend
-      axios.post('http://localhost:5000/api/follow-email', {
+      axios.post('http://localhost:5000/api/follow-from-email', {
         email: emailInput
       }, {
         withCredentials: true,
       })
       .then(() => {
         // Fetch emails for the newly added email address
-        fetchFollowedEmails(newFollowEmails);
+        fetchEmailThreads(newFollowEmails, followToEmails);
       })
       .catch(error => {
         console.error('Failed to add email to follow:', error);
@@ -158,24 +208,64 @@ export default function EmailList({ token }) {
     }
   };
   
-  
-  // Update the remove function as well
+  // Add this method back to your component
   const removeFollowedEmail = async (indexToRemove) => {
     try {
-      const updatedEmails = followEmails.filter((_, i) => i !== indexToRemove);
+      const updatedEmails = followFromEmails.filter((_, i) => i !== indexToRemove);
       
-      await axios.post('http://localhost:5000/api/followed-emails', {
-        emails: updatedEmails
+      const response = await axios.post('http://localhost:5000/api/followed-emails', {
+        fromEmails: updatedEmails,
+        toEmails: followToEmails
       }, {
         withCredentials: true
       });
       
-      setFollowEmails(updatedEmails);
+      setFollowFromEmails(updatedEmails);
+      fetchEmailThreads(updatedEmails, followToEmails);
     } catch (error) {
       console.error('Failed to remove followed email:', error);
       alert('Failed to remove email from follow list');
     }
   };
+  // Add methods to remove followed emails
+  const removeFollowedFromEmail = async (indexToRemove) => {
+    try {
+      const updatedEmails = followFromEmails.filter((_, i) => i !== indexToRemove);
+      
+      await axios.post('http://localhost:5000/api/followed-emails', {
+        fromEmails: updatedEmails,
+        toEmails: followToEmails
+      }, {
+        withCredentials: true
+      });
+      
+      setFollowFromEmails(updatedEmails);
+      fetchEmailThreads(updatedEmails, followToEmails);
+    } catch (error) {
+      console.error('Failed to remove followed from email:', error);
+      alert('Failed to remove email from follow list');
+    }
+  };
+
+  const removeFollowedToEmail = async (indexToRemove) => {
+    try {
+      const updatedEmails = followToEmails.filter((_, i) => i !== indexToRemove);
+      
+      await axios.post('http://localhost:5000/api/followed-emails', {
+        fromEmails: followFromEmails,
+        toEmails: updatedEmails
+      }, {
+        withCredentials: true
+      });
+      
+      setFollowToEmails(updatedEmails);
+      fetchEmailThreads(followFromEmails, updatedEmails);
+    } catch (error) {
+      console.error('Failed to remove followed to email:', error);
+      alert('Failed to remove email from follow list');
+    }
+  };
+
   
   // Toggle thread expansion
   const toggleThread = (threadId) => {
@@ -337,7 +427,83 @@ const sendReply = async (threadId, to, subject, isDraft) => {
           </div>
         </div>
       )}
-  
+    <div className="email-tabs">
+        <button 
+          onClick={() => setActiveTab('from')}
+          className={activeTab === 'from' ? 'active' : ''}
+        >
+          Followed From
+        </button>
+        <button 
+          onClick={() => setActiveTab('to')}
+          className={activeTab === 'to' ? 'active' : ''}
+        >
+          Followed To
+        </button>
+      </div>
+
+      {activeTab === 'from' ? (
+        <div className="email-input-container">
+          <input
+            type="text"
+            placeholder="Add email to follow from..."
+            value={emailInputFrom}
+            onChange={(e) => setEmailInputFrom(e.target.value)}
+            className="email-input"
+          />
+          <button
+            onClick={handleAddFromEmail}
+            className="add-button"
+          >
+            Add Email
+          </button>
+
+          <div className="email-chips">
+            {followFromEmails.map((email, index) => (
+              <div key={index} className="email-chip">
+                <span>{email}</span>
+                <button 
+                  onClick={() => removeFollowedFromEmail(index)}
+                  className="remove-button"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="email-input-container">
+          <input
+            type="text"
+            placeholder="Add email to follow to..."
+            value={emailInputTo}
+            onChange={(e) => setEmailInputTo(e.target.value)}
+            className="email-input"
+          />
+          <button
+            onClick={handleAddToEmail}
+            className="add-button"
+          >
+            Add Email
+          </button>
+
+          <div className="email-chips">
+            {followToEmails.map((email, index) => (
+              <div key={index} className="email-chip">
+                <span>{email}</span>
+                <button 
+                  onClick={() => removeFollowedToEmail(index)}
+                  className="remove-button"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Search and Email Management */}
       <div className="search-section">
         <input
@@ -347,7 +513,7 @@ const sendReply = async (threadId, to, subject, isDraft) => {
           onChange={(e) => setSearch(e.target.value)}
           className="search-input"
         />
-  
+
         <div className="email-input-container">
           <input
             type="text"
@@ -363,11 +529,11 @@ const sendReply = async (threadId, to, subject, isDraft) => {
             Add Email
           </button>
         </div>
-  
+
         <div className="follow-header">
           <div className="follow-count">
-            {followEmails.length > 0 ? 
-              `Following ${followEmails.length} email${followEmails.length > 1 ? 's' : ''}` : 
+            {followFromEmails.length > 0 ? 
+              `Following ${followFromEmails.length} email${followFromEmails.length > 1 ? 's' : ''}` : 
               'No emails followed yet'}
           </div>
           <div className="view-buttons">
@@ -385,9 +551,9 @@ const sendReply = async (threadId, to, subject, isDraft) => {
             </button>
           </div>
         </div>
-  
+
         <div className="email-chips">
-          {followEmails.map((email, index) => (
+          {followFromEmails.map((email, index) => (
             <div key={index} className="email-chip">
               <span>{email}</span>
               <button 
@@ -400,7 +566,7 @@ const sendReply = async (threadId, to, subject, isDraft) => {
           ))}
         </div>
       </div>
-  
+        
       {/* Email Threads Grouped by Sender */}
       {Object.keys(emailGroups).length > 0 ? (
         <div className="email-groups">
