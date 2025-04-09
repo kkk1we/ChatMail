@@ -570,6 +570,34 @@ app.get('/api/followed-emails', async (req, res) => {
   }
 });
 
+app.post('/api/followed-emails', async (req, res) => {
+  const token = req.cookies.token;
+  const { fromEmails = [], toEmails = [] } = req.body;
+  
+  if (!token) return res.status(401).json({ error: 'Unauthorized' });
+  
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findOne({ googleId: decoded.googleId });
+    
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    
+    // Update both from and to email lists
+    user.followedFromEmails = fromEmails;
+    user.followedToEmails = toEmails;
+    
+    await user.save();
+    
+    res.json({ 
+      message: 'Followed emails updated', 
+      followedFromEmails: user.followedFromEmails,
+      followedToEmails: user.followedToEmails
+    });
+  } catch (err) {
+    console.error('Failed to update followed emails:', err);
+    res.status(500).json({ error: 'Server error', details: err.message });
+  }
+});
 
 // Update followed emails
 app.post('/api/emails/followed', async (req, res) => {
