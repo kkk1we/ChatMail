@@ -1,9 +1,12 @@
+// models/User.js
 const mongoose = require('mongoose');
 
 const userSchema = new mongoose.Schema({
-  googleId: { type: String, required: true, unique: true },
+  googleId: String,
+  email: String,
   refreshToken: String,
-  email: String, // <-- add this
+  followedFromEmails: [String], // New field for "from" emails
+  followedToEmails: [String],   // New field for "to" emails
 });
 
 module.exports = mongoose.model('User', userSchema);

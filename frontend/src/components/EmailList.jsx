@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { useEditor, EditorContent } from '@tiptap/react';
-import StarterKit from '@tiptap/starter-kit';
+import EmailEditor from './EmailEditor';
 import './EmailList.css';
 
-function cleanBody(html) {
+// Helper functions
+const cleanBody = (html) => {
   if (!html || typeof html !== 'string') return '';
   return html
     .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
@@ -15,9 +15,9 @@ function cleanBody(html) {
     .replace(/&nbsp;/g, ' ')
     .replace(/\s{2,}/g, ' ')
     .trim();
-}
+};
 
-function getDateLabel(dateStr) {
+const getDateLabel = (dateStr) => {
   const date = new Date(dateStr);
   const today = new Date();
   const yesterday = new Date();
@@ -26,27 +26,27 @@ function getDateLabel(dateStr) {
   if (date.toDateString() === today.toDateString()) return 'Today';
   if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
   return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', weekday: 'long' });
-}
+};
 
-// Simple editor factory function to create multiple editors
-function useCreateEditor() {
-  return useEditor({
-    extensions: [StarterKit],
-    editorProps: {
-      handleKeyDown(view, event) {
-        if (event.key === 'Tab') {
-          event.preventDefault();
-          view.dispatch(
-            view.state.tr.insertText('    ') // inserts 4 spaces as indent
-          );
-          return true;
-        }
-        return false;
-      }
-    },
-    content: '',
-  });
-}
+const getInitials = (from) => {
+  const name = from.split('<')[0].trim();
+  return name.split(' ').map(word => word[0]).join('').slice(0, 2).toUpperCase();
+};
+
+// Extract primary email from a sender string (handles formats like "Name <email@example.com>")
+const extractEmail = (from) => {
+  const emailMatch = from.match(/<([^>]+)>/) || from.match(/([^\s]+@[^\s]+)/);
+  return emailMatch ? emailMatch[1] : from;
+};
+
+// Get a preview of the thread content (first few words)
+const getThreadPreview = (thread) => {
+  if (!thread.messages || thread.messages.length === 0) return '';
+  const lastMessage = thread.messages[thread.messages.length - 1];
+  const cleanedBody = cleanBody(lastMessage.body);
+  const textOnly = cleanedBody.replace(/<[^>]+>/g, ' ').trim();
+  return textOnly.length > 60 ? textOnly.substring(0, 60) + '...' : textOnly;
+};
 
 export default function EmailList({ token }) {
   const [profile, setProfile] = useState(null);
@@ -55,60 +55,25 @@ export default function EmailList({ token }) {
   const [userEmail, setUserEmail] = useState('');
   const [followEmails, setFollowEmails] = useState([]);
   const [emailInput, setEmailInput] = useState('');
-  const [threadStates, setThreadStates] = useState({});
-  const [viewMode, setViewMode] = useState('grid'); // 'grid' or 'list'
-  const [editors, setEditors] = useState({});
-
-  // Initialize thread states when threads change
-  useEffect(() => {
-    const initialStates = {};
-    threads.forEach(thread => {
-      if (!threadStates[thread.id]) {
-        initialStates[thread.id] = {
-          expanded: false,
-          threadSearch: '',
-          showPreview: false,
-          pendingReplyMeta: null,
-          attachments: [],
-          editor: null // Will be set when expanded
-        };
-      }
-    });
-    
-    if (Object.keys(initialStates).length > 0) {
-      setThreadStates(prev => ({...prev, ...initialStates}));
-    }
-  }, [threads]);
-
-  useEffect(() => {
-    const fetchEmails = async () => {
-      try {
-        const res = await axios.post('http://localhost:5000/api/emails/followed', {
-          senders: followEmails,
-        }, {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          },
-          withCredentials: true,
-        });
-        setThreads(res.data);
-      } catch (error) {
-        console.error('❌ Email fetch failed:', error.response?.data || error.message);
-      }
-    };
-
-    if (followEmails.length > 0) {
-      fetchEmails();
-    }
-  }, [followEmails, token]);
+  const [emailGroups, setEmailGroups] = useState({});
+  const [viewMode, setViewMode] = useState('grid');
   
-  const handleAddEmail = () => {
-    if (emailInput && !followEmails.includes(emailInput)) {
-      setFollowEmails((prev) => [...prev, emailInput]);
-      setEmailInput('');
-    }
-  };
+  // Thread-specific state
+  const [expandedThreads, setExpandedThreads] = useState({});
+  const [threadSearches, setThreadSearches] = useState({});
+  const [pendingReplies, setPendingReplies] = useState({});
+  const [attachments, setAttachments] = useState({});
+  const [showPreviews, setShowPreviews] = useState({});
+  const [editorContents, setEditorContents] = useState({});
+  const [isLoading, setIsLoading] = useState(false);
 
+  const [followFromEmails, setFollowFromEmails] = useState([]);
+  const [followToEmails, setFollowToEmails] = useState([]);
+  const [emailInputFrom, setEmailInputFrom] = useState('');
+  const [emailInputTo, setEmailInputTo] = useState('');
+  const [activeTab, setActiveTab] = useState('from'); // 'from' or 'to'
+
+  // Fetch profile data
   useEffect(() => {
     const fetchProfile = async () => {
       try {
@@ -124,236 +89,310 @@ export default function EmailList({ token }) {
 
     fetchProfile();
   }, []);
-  
-  const toggleThread = (threadId) => {
-    setThreadStates(prev => {
-      const updatedState = {...prev};
-      
-      // If we're expanding a thread and no editor exists, create one
-      if (!updatedState[threadId].expanded && !updatedState[threadId].editor) {
-        // updatedState[threadId].editor = useCreateEditor();
-      }
-      
-      updatedState[threadId] = {
-        ...updatedState[threadId],
-        expanded: !updatedState[threadId].expanded,
-        threadSearch: '',
-      };
-      
-      return updatedState;
-    });
-  };
-
-  const getInitials = (from) => {
-    const name = from.split('<')[0].trim();
-    return name.split(' ').map(word => word[0]).join('').slice(0, 2).toUpperCase();
-  };
-  
-  const appendLocalReply = (threadId, message) => {
-    setThreads((prev) =>
-      prev.map((t) => {
-        if (t.id !== threadId) return t;
-        return {
-          ...t,
-          messages: [...t.messages, message],
-        };
-      })
-    );
-  };
-
-  const sendReply = async (threadId, to, subject, isDraft) => {
-    const editor = threadStates[threadId]?.editor;
-    if (!editor) return;
-    
-    const html = editor.getHTML();
-    
+  const fetchFollowedEmails = async (emailsToFetch = followEmails) => {
     try {
-      await axios.post('http://localhost:5000/api/reply', {
-        threadId,
-        to,
-        subject,
-        message: html,
-        draft: isDraft
-      }, { withCredentials: true });
-
-      appendLocalReply(threadId, {
-        from: userEmail,
-        subject,
-        date: new Date().toISOString(),
-        body: html,
+      // First ensure we have the latest list of followed emails
+      const res = await axios.get('http://localhost:5000/api/followed-emails', {
+        withCredentials: true,
       });
-
-      if (isDraft) {
-        alert('✅ Draft saved!');
-      } else {
-        alert('✅ Reply sent!');
+      if (res.data && Array.isArray(res.data.followedEmails)) {
+        setFollowEmails(res.data.followedEmails);
       }
-
-      editor.commands.setContent('');
       
-      // Reset thread state
-      setThreadStates(prev => ({
-        ...prev,
-        [threadId]: {
-          ...prev[threadId],
-          showPreview: false,
-          pendingReplyMeta: null,
-          attachments: []
-        }
-      }));
+      // Then fetch the actual email content for these addresses
+      setIsLoading(true); // Add this state variable to track loading state
       
-    } catch (err) {
-      console.error('❌ Reply failed:', err);
-      alert('Failed to send reply.');
+      // Fetch email threads for the followed emails
+      const threadsRes = await axios.post('http://localhost:5000/api/email-threads', {
+        emails: emailsToFetch
+      }, {
+        withCredentials: true,
+      });
+      
+      if (threadsRes.data && threadsRes.data.threads) {
+        // Group emails by sender
+        const groupedThreads = {};
+        threadsRes.data.threads.forEach(thread => {
+          // Assuming the first message's from field contains the sender
+          const sender = thread.messages[0].from;
+          if (!groupedThreads[sender]) {
+            groupedThreads[sender] = [];
+          }
+          groupedThreads[sender].push(thread);
+        });
+        
+        setEmailGroups(groupedThreads);
+      }
+      
+      setIsLoading(false);
+    } catch (error) {
+      console.error('Failed to fetch emails:', error);
+      setIsLoading(false);
+    }
+  };
+  // Fetch emails for followed addresses
+  useEffect(() => {
+    fetchFollowedEmails();
+  }, []);
+  
+  // Update handleAddEmail to save to database
+  const handleAddEmail = () => {
+    if (emailInput && !followEmails.includes(emailInput)) {
+      const newFollowEmails = [...followEmails, emailInput];
+      setFollowEmails(newFollowEmails);
+      setEmailInput('');
+      
+      // Save to backend
+      axios.post('http://localhost:5000/api/follow-email', {
+        email: emailInput
+      }, {
+        withCredentials: true,
+      })
+      .then(() => {
+        // Fetch emails for the newly added email address
+        fetchFollowedEmails(newFollowEmails);
+      })
+      .catch(error => {
+        console.error('Failed to add email to follow:', error);
+      });
     }
   };
   
-  const setThreadSearch = (threadId, value) => {
-    setThreadStates(prev => ({
-      ...prev,
-      [threadId]: {
-        ...prev[threadId],
-        threadSearch: value
-      }
-    }));
+  
+  // Update the remove function as well
+  const removeFollowedEmail = async (indexToRemove) => {
+    try {
+      const updatedEmails = followEmails.filter((_, i) => i !== indexToRemove);
+      
+      await axios.post('http://localhost:5000/api/followed-emails', {
+        emails: updatedEmails
+      }, {
+        withCredentials: true
+      });
+      
+      setFollowEmails(updatedEmails);
+    } catch (error) {
+      console.error('Failed to remove followed email:', error);
+      alert('Failed to remove email from follow list');
+    }
   };
   
-  const setAttachments = (threadId, newAttachments) => {
-    setThreadStates(prev => ({
+  // Toggle thread expansion
+  const toggleThread = (threadId) => {
+    setExpandedThreads(prev => ({
       ...prev,
-      [threadId]: {
-        ...prev[threadId],
-        attachments: newAttachments
-      }
-    }));
-  };
-  
-  const setPendingReplyMeta = (threadId, meta) => {
-    setThreadStates(prev => ({
-      ...prev,
-      [threadId]: {
-        ...prev[threadId],
-        pendingReplyMeta: meta,
-        showPreview: true
-      }
-    }));
-  };
-  
-  const setShowPreview = (threadId, value) => {
-    setThreadStates(prev => ({
-      ...prev,
-      [threadId]: {
-        ...prev[threadId],
-        showPreview: value
-      }
+      [threadId]: !prev[threadId]
     }));
   };
 
-  const filteredThreads = threads
-    .filter((thread) =>
-      thread.subject?.toLowerCase().includes(search.toLowerCase()) ||
-      thread.messages?.some(msg =>
-        msg.from?.toLowerCase().includes(search.toLowerCase()) ||
-        msg.body?.toLowerCase().includes(search.toLowerCase())
-      )
+  // Update thread search
+  const updateThreadSearch = (threadId, value) => {
+    setThreadSearches(prev => ({
+      ...prev,
+      [threadId]: value
+    }));
+  };
+
+  // Add/remove attachments
+  const updateAttachments = (threadId, newAttachments) => {
+    setAttachments(prev => ({
+      ...prev,
+      [threadId]: newAttachments
+    }));
+  };
+
+  // Set pending reply metadata
+  const setPendingReplyMeta = (threadId, meta) => {
+    setPendingReplies(prev => ({
+      ...prev,
+      [threadId]: meta
+    }));
+    setShowPreviews(prev => ({
+      ...prev,
+      [threadId]: true
+    }));
+  };
+
+  // Toggle preview visibility
+  const togglePreview = (threadId, value) => {
+    setShowPreviews(prev => ({
+      ...prev,
+      [threadId]: value
+    }));
+  };
+
+  // Update editor content
+  const updateEditorContent = (threadId, content) => {
+    setEditorContents(prev => ({
+      ...prev,
+      [threadId]: content
+    }));
+  };
+
+  // Send or save reply
+ // Send or save reply
+// Update the sendReply function in your EmailList.jsx
+const sendReply = async (threadId, to, subject, isDraft) => {
+  const html = editorContents[threadId] || '';
+  if (!html) return;
+  
+  try {
+    // Format the recipient correctly if needed
+    const recipient = to.includes('<') ? to : `<${to}>`;
+    
+    await axios.post('http://localhost:5000/api/reply', {
+      // Skip threadId if it's not a valid Gmail thread ID
+      // threadId: threadId, 
+      to: recipient,
+      subject: `Re: ${subject}`,
+      message: html,
+      draft: isDraft
+    }, { 
+      withCredentials: true,
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+
+    // Add reply to local thread
+    setThreads(prev =>
+      prev.map(thread => {
+        if (thread.id !== threadId) return thread;
+        return {
+          ...thread,
+          messages: [
+            ...thread.messages,
+            {
+              id: `local-${Date.now()}`,
+              from: userEmail,
+              subject,
+              date: new Date().toISOString(),
+              body: html,
+            }
+          ],
+        };
+      })
     );
 
+    // Show success message
+    alert(isDraft ? '✅ Draft saved!' : '✅ Reply sent!');
+
+    // Reset editor content
+    updateEditorContent(threadId, '');
+    
+    // Reset preview state
+    togglePreview(threadId, false);
+    
+    // Clear attachments
+    updateAttachments(threadId, []);
+    
+  } catch (err) {
+    console.error('❌ Reply failed:', err.response?.data || err.message);
+    alert(`Failed to send reply: ${err.response?.data?.error || err.message}`);
+  }
+};
+
+  // Group threads by sender email
+  const groupThreadsBySender = () => {
+    const groupedThreads = {};
+    
+    threads.forEach(thread => {
+      if (!thread.messages || thread.messages.length === 0) return;
+      
+      // Get the sender of the first message
+      const firstMessage = thread.messages[0];
+      const sender = extractEmail(firstMessage.from);
+      
+      if (!groupedThreads[sender]) {
+        groupedThreads[sender] = [];
+      }
+      
+      groupedThreads[sender].push(thread);
+    });
+    
+    return groupedThreads;
+  };
+
+  // Filter threads based on search
+  const filteredThreads = threads.filter(thread =>
+    thread.subject?.toLowerCase().includes(search.toLowerCase()) ||
+    thread.messages?.some(msg =>
+      msg.from?.toLowerCase().includes(search.toLowerCase()) ||
+      msg.body?.toLowerCase().includes(search.toLowerCase())
+    )
+  );
+
+  // Group threads by sender
+  const groupedThreads = groupThreadsBySender();
+
   return (
-    <div className="email-list" style={{ padding: '20px', fontFamily: 'Arial, sans-serif' }}>
+    <div className="email-list">
+      {/* Profile Section */}
       {profile && (
-        <div style={{
-          display: 'flex', alignItems: 'center', marginBottom: '20px', padding: '10px',
-          backgroundColor: '#f0f0f0', borderRadius: '8px'
-        }}>
-          <img src={profile.picture} alt="avatar" style={{ borderRadius: '50%', width: 40, height: 40, marginRight: 12 }} />
+        <div className="profile-container">
+          <img src={profile.picture} alt="avatar" className="profile-image" />
           <div>
             <div><strong>{profile.name}</strong></div>
-            <div style={{ fontSize: '0.9em', color: '#666' }}>{profile.email}</div>
+            <div className="profile-email">{profile.email}</div>
           </div>
         </div>
       )}
-
-      <div style={{ marginBottom: '20px' }}>
+  
+      {/* Search and Email Management */}
+      <div className="search-section">
         <input
           type="text"
           placeholder="🔍 Search all threads..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          style={{ padding: '10px', width: '100%', marginBottom: '10px', borderRadius: '8px', border: '1px solid #ccc' }}
+          className="search-input"
         />
-
-        <div style={{ display: 'flex', gap: '10px', marginBottom: '10px' }}>
+  
+        <div className="email-input-container">
           <input
             type="text"
             placeholder="Add email to follow..."
             value={emailInput}
             onChange={(e) => setEmailInput(e.target.value)}
-            style={{ padding: '10px', flex: 1, borderRadius: '8px', border: '1px solid #ccc' }}
+            className="email-input"
           />
           <button
             onClick={handleAddEmail}
-            style={{ padding: '10px', backgroundColor: '#2196f3', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+            className="add-button"
           >
             Add Email
           </button>
         </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ fontWeight: 'bold' }}>
-            {followEmails.length > 0 ? `Following ${followEmails.length} email${followEmails.length > 1 ? 's' : ''}` : 'No emails followed yet'}
+  
+        <div className="follow-header">
+          <div className="follow-count">
+            {followEmails.length > 0 ? 
+              `Following ${followEmails.length} email${followEmails.length > 1 ? 's' : ''}` : 
+              'No emails followed yet'}
           </div>
-          <div style={{ display: 'flex', gap: '10px' }}>
+          <div className="view-buttons">
             <button 
               onClick={() => setViewMode('grid')}
-              style={{ 
-                padding: '5px 10px', 
-                backgroundColor: viewMode === 'grid' ? '#2196f3' : '#e0e0e0',
-                color: viewMode === 'grid' ? 'white' : 'black',
-                border: 'none', 
-                borderRadius: '4px', 
-                cursor: 'pointer' 
-              }}
+              className={`view-button ${viewMode === 'grid' ? 'active' : ''}`}
             >
               Grid View
             </button>
             <button 
               onClick={() => setViewMode('list')}
-              style={{ 
-                padding: '5px 10px', 
-                backgroundColor: viewMode === 'list' ? '#2196f3' : '#e0e0e0',
-                color: viewMode === 'list' ? 'white' : 'black',
-                border: 'none', 
-                borderRadius: '4px', 
-                cursor: 'pointer' 
-              }}
+              className={`view-button ${viewMode === 'list' ? 'active' : ''}`}
             >
               List View
             </button>
           </div>
         </div>
-
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '10px' }}>
+  
+        <div className="email-chips">
           {followEmails.map((email, index) => (
-            <div key={index} style={{ 
-              display: 'flex', 
-              alignItems: 'center', 
-              backgroundColor: '#e3f2fd', 
-              borderRadius: '20px', 
-              padding: '5px 10px',
-              border: '1px solid #bbdefb'
-            }}>
+            <div key={index} className="email-chip">
               <span>{email}</span>
               <button 
-                onClick={() => setFollowEmails(prev => prev.filter((_, i) => i !== index))}
-                style={{ 
-                  marginLeft: '5px', 
-                  background: 'none', 
-                  border: 'none', 
-                  cursor: 'pointer',
-                  color: '#f44336',
-                  fontWeight: 'bold',
-                  fontSize: '16px'
-                }}
+                onClick={() => removeFollowedEmail(index)}
+                className="remove-button"
               >
                 ×
               </button>
@@ -361,492 +400,224 @@ export default function EmailList({ token }) {
           ))}
         </div>
       </div>
+  
+      {/* Email Threads Grouped by Sender */}
+      {Object.keys(emailGroups).length > 0 ? (
+        <div className="email-groups">
+          {Object.entries(emailGroups).map(([sender, senderThreads]) => (
+            <div key={sender} className="email-group">
+              <h2 className="sender-email">{sender}</h2>
+              
+              <div className={viewMode === 'grid' ? 'grid-container' : 'list-container'}>
+                {senderThreads.map((thread) => {
+                  const isExpanded = expandedThreads[thread.id] || false;
+                  const threadSearch = threadSearches[thread.id] || '';
+                  const threadAttachments = attachments[thread.id] || [];
+                  
+                  const filteredMsgs = thread.messages.filter(msg =>
+                    msg.from.toLowerCase().includes(threadSearch.toLowerCase()) ||
+                    msg.body.toLowerCase().includes(threadSearch.toLowerCase())
+                  );
+  
+                  let lastDateLabel = '';
+                  const threadPreview = getThreadPreview(thread);
+  
+                  return (
+                    <div key={thread.id} className={`email-thread ${isExpanded ? 'expanded' : ''}`}>
+                      <div className="thread-header" onClick={() => toggleThread(thread.id)}>
+                        <h3 className="thread-title">
+                          📬 {thread.subject || '(no subject)'}
+                        </h3>
+                        <div className="thread-preview">{threadPreview}</div>
+                        <span className={`thread-toggle ${isExpanded ? 'expanded' : ''}`}>▼</span>
+                      </div>
+                      
+                      <div className="thread-info">
+                        {thread.messages.length} message{thread.messages.length !== 1 ? 's' : ''} • 
+                        Last activity: {new Date(thread.messages[thread.messages.length - 1].date).toLocaleString()}
+                      </div>
 
-      {filteredThreads.length > 0 ? (
-        <div style={viewMode === 'grid' ? { 
-          display: 'grid', 
-          gridTemplateColumns: 'repeat(auto-fill, minmax(350px, 1fr))', 
-          gap: '20px'
-        } : {}}>
-          {filteredThreads.map((thread) => {
-            const threadState = threadStates[thread.id] || { 
-              expanded: false, 
-              threadSearch: '', 
-              showPreview: false,
-              pendingReplyMeta: null,
-              attachments: [],
-              editor: null
-            };
-            
-            const expanded = threadState.expanded;
-            const threadSearch = threadState.threadSearch || '';
-            const attachments = threadState.attachments || [];
-            const editor = threadState.editor;
-            
-            const filteredMsgs = thread.messages.filter(msg =>
-              msg.from.toLowerCase().includes(threadSearch.toLowerCase()) ||
-              msg.body.toLowerCase().includes(threadSearch.toLowerCase())
-            );
+                      {isExpanded && (
+                        <div className="thread-expanded">
+                          <input
+                            type="text"
+                            placeholder="Search in this thread..."
+                            value={threadSearch}
+                            onChange={(e) => updateThreadSearch(thread.id, e.target.value)}
+                            className="thread-search"
+                          />
 
-            let lastDateLabel = '';
+                          <div className="messages-container">
+                            {filteredMsgs.map((msg, i) => {
+                              const dateLabel = getDateLabel(msg.date);
+                              const showDateLabel = dateLabel !== lastDateLabel;
+                              lastDateLabel = dateLabel;
 
-            return (
-              <div key={thread.id} className={`email-thread ${expanded ? 'expanded' : ''}`} style={{
-                border: '2px solid #ccc', 
-                borderRadius: '10px', 
-                padding: '15px', 
-                marginBottom: viewMode === 'list' ? '25px' : '0',
-                backgroundColor: '#fafafa', 
-                boxShadow: '0 2px 6px rgba(0,0,0,0.05)',
-                borderTop: '5px solid #2196f3', // Visual accent
-                display: 'flex',
-                flexDirection: 'column'
-              }}>
-                <div style={{ 
-                  display: 'flex', 
-                  justifyContent: 'space-between', 
-                  alignItems: 'center',
-                  cursor: 'pointer'
-                }} onClick={() => toggleThread(thread.id)}>
-                  <h3 style={{ margin: '0 0 5px 0', color: '#333', flex: 1 }}>
-                    📬 {thread.subject || '(no subject)'}
-                  </h3>
-                  <span style={{ 
-                    transform: expanded ? 'rotate(180deg)' : 'rotate(0)', 
-                    transition: 'transform 0.3s',
-                    fontSize: '1.2em'
-                  }}>▼</span>
-                </div>
-                
-                <div style={{ fontSize: '0.85em', color: '#666', marginBottom: '10px' }}>
-                  {thread.messages.length} message{thread.messages.length !== 1 ? 's' : ''} • 
-                  Last activity: {new Date(thread.messages[thread.messages.length - 1].date).toLocaleString()}
-                </div>
+                              const isMe = msg.from.includes(userEmail);
 
-                {expanded && (
-                  <div style={{ marginTop: '15px' }}>
-                    <input
-                      type="text"
-                      placeholder="Search in this thread..."
-                      value={threadSearch}
-                      onChange={(e) => setThreadSearch(thread.id, e.target.value)}
-                      style={{ padding: '8px', width: '100%', marginBottom: '15px', borderRadius: '6px', border: '1px solid #aaa' }}
-                    />
+                              return (
+                                <div key={i} className="message-wrapper">
+                                  {showDateLabel && (
+                                    <div className="date-label">
+                                      ── {dateLabel} ──
+                                    </div>
+                                  )}
+                                  <div className={`message ${isMe ? 'sent' : 'received'}`}>
+                                    <div className={`avatar ${isMe ? 'me' : ''}`}>
+                                      {isMe ? 'You' : getInitials(msg.from)}
+                                    </div>
+                                    <div className="message-content">
+                                      <div className="message-sender">{isMe ? 'You' : msg.from}</div>
+                                      <div className="message-body"
+                                        dangerouslySetInnerHTML={{ __html: cleanBody(msg.body) }} />
+                                      <div className="message-time">{new Date(msg.date).toLocaleString()}</div>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
 
-                    <div style={{ 
-                      maxHeight: '400px', 
-                      overflowY: 'auto', 
-                      paddingRight: '10px',
-                      border: '1px solid #e0e0e0',
-                      borderRadius: '8px',
-                      padding: '10px',
-                      backgroundColor: '#f5f5f5'
-                    }}>
-                      {filteredMsgs.map((msg, i) => {
-                        const dateLabel = getDateLabel(msg.date);
-                        const showDateLabel = dateLabel !== lastDateLabel;
-                        lastDateLabel = dateLabel;
+                          <div className="reply-container">
+                            <h4 className="reply-title">Reply</h4>
+                            
+                            {/* For each thread, we render a separate EmailEditor component */}
+                            <EmailEditor
+                              threadId={thread.id}
+                              value={editorContents[thread.id] || ''}
+                              onChange={(html) => updateEditorContent(thread.id, html)}
+                            />
 
-                        const isMe = msg.from.includes(userEmail);
-
-                        return (
-                          <div key={i} style={{ display: 'flex', flexDirection: 'column' }}>
-                            {showDateLabel && (
-                              <div style={{
-                                textAlign: 'center', margin: '15px 0 5px', color: '#666', fontSize: '0.85em', fontWeight: 'bold'
-                              }}>
-                                ── {dateLabel} ──
-                              </div>
-                            )}
-                            <div className={`message ${isMe ? 'sent' : 'received'}`} style={{
-                              display: 'flex', 
-                              flexDirection: isMe ? 'row-reverse' : 'row', 
-                              alignSelf: isMe ? 'flex-end' : 'flex-start',
-                              maxWidth: '75%', 
-                              backgroundColor: isMe ? '#dcf8c6' : '#fff', 
-                              padding: '10px', 
-                              borderRadius: '10px',
-                              margin: '5px 0', 
-                              border: isMe ? '1px solid #a2d5a2' : '1px solid #ccc',
-                              boxShadow: '0 1px 3px rgba(0,0,0,0.05)', 
-                              textAlign: isMe ? 'right' : 'left'
-                            }}>
-                              <div className="avatar" style={{
-                                backgroundColor: isMe ? '#4caf50' : '#888', 
-                                color: '#fff', 
-                                borderRadius: '50%',
-                                width: '36px', 
-                                height: '36px', 
-                                display: 'flex', 
-                                alignItems: 'center', 
-                                justifyContent: 'center',
-                                fontWeight: 'bold', 
-                                fontSize: '0.9em', 
-                                margin: isMe ? '0 0 0 10px' : '0 10px 0 0'
-                              }}>
-                                {isMe ? 'You' : getInitials(msg.from)}
-                              </div>
-                              <div style={{ flex: 1 }}>
-                                <div style={{ fontWeight: 'bold' }}>{isMe ? 'You' : msg.from}</div>
-                                <div className="email-body" style={{ marginTop: '6px', marginBottom: '8px' }}
-                                  dangerouslySetInnerHTML={{ __html: cleanBody(msg.body) }} />
-                                <div style={{ fontSize: '0.8em', color: '#888' }}>{new Date(msg.date).toLocaleString()}</div>
+                            <div className="attachment-section">
+                              <label className="attachment-label">📎 Attach files:
+                                <input 
+                                  type="file" 
+                                  multiple
+                                  onChange={(e) => {
+                                    const newFiles = Array.from(e.target.files || []);
+                                    updateAttachments(thread.id, [...threadAttachments, ...newFiles]);
+                                  }} 
+                                  className="file-input"
+                                />
+                              </label>
+                              <div className="attachment-list">
+                                {threadAttachments.map((file, index) => (
+                                  <div key={index} className="attachment-item">
+                                    <span className="file-icon">📄</span>
+                                    {file.name}
+                                    <button 
+                                      onClick={() => updateAttachments(thread.id, threadAttachments.filter((_, i) => i !== index))} 
+                                      className="remove-button"
+                                    >
+                                      ×
+                                    </button>
+                                  </div>
+                                ))}
                               </div>
                             </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-
-                    <div style={{ marginTop: '15px', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '15px' }}>
-                      <h4 style={{ margin: '0 0 10px 0' }}>Reply</h4>
-                      {editor && (
-                        <div style={{ marginBottom: '8px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                          <button
-                            onClick={() => editor.chain().focus().toggleBold().run()}
-                            className={editor.isActive('bold') ? 'active' : ''}
-                            title="Bold"
-                            aria-label="Bold"
-                            style={{ 
-                              fontWeight: 'bold', 
-                              padding: '5px 10px',
-                              borderRadius: '4px',
-                              border: '1px solid #ccc',
-                              backgroundColor: editor.isActive('bold') ? '#e3f2fd' : '#fff'
-                            }}
-                          >
-                            B
-                          </button>
-                          <button 
-                            onClick={() => editor.chain().focus().toggleItalic().run()} 
-                            style={{ 
-                              fontStyle: 'italic',
-                              padding: '5px 10px',
-                              borderRadius: '4px',
-                              border: '1px solid #ccc',
-                              backgroundColor: editor.isActive('italic') ? '#e3f2fd' : '#fff'
-                            }}
-                          >
-                            I
-                          </button>
-                          <button 
-                            onClick={() => editor.chain().focus().toggleStrike().run()} 
-                            style={{ 
-                              textDecoration: 'line-through',
-                              padding: '5px 10px',
-                              borderRadius: '4px',
-                              border: '1px solid #ccc',
-                              backgroundColor: editor.isActive('strike') ? '#e3f2fd' : '#fff'
-                            }}
-                          >
-                            S
-                          </button>
-                          <button 
-                            onClick={() => editor.chain().focus().setParagraph().run()}
-                            style={{ 
-                              padding: '5px 10px',
-                              borderRadius: '4px',
-                              border: '1px solid #ccc',
-                              backgroundColor: editor.isActive('paragraph') ? '#e3f2fd' : '#fff'
-                            }}
-                          >
-                            P
-                          </button>
-                          <button 
-                            onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
-                            style={{ 
-                              padding: '5px 10px',
-                              borderRadius: '4px',
-                              border: '1px solid #ccc',
-                              backgroundColor: editor.isActive('heading', { level: 1 }) ? '#e3f2fd' : '#fff'
-                            }}
-                          >
-                            H1
-                          </button>
-                          <button 
-                            onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
-                            style={{ 
-                              padding: '5px 10px',
-                              borderRadius: '4px',
-                              border: '1px solid #ccc',
-                              backgroundColor: editor.isActive('heading', { level: 2 }) ? '#e3f2fd' : '#fff'
-                            }}
-                          >
-                            H2
-                          </button>
-                          <button 
-                            onClick={() => editor.chain().focus().toggleBulletList().run()}
-                            style={{ 
-                              padding: '5px 10px',
-                              borderRadius: '4px',
-                              border: '1px solid #ccc',
-                              backgroundColor: editor.isActive('bulletList') ? '#e3f2fd' : '#fff'
-                            }}
-                          >
-                            • List
-                          </button>
-                          <button 
-                            onClick={() => editor.chain().focus().toggleOrderedList().run()}
-                            style={{ 
-                              padding: '5px 10px',
-                              borderRadius: '4px',
-                              border: '1px solid #ccc',
-                              backgroundColor: editor.isActive('orderedList') ? '#e3f2fd' : '#fff'
-                            }}
-                          >
-                            1. List
-                          </button>
-                          <button 
-                            onClick={() => editor.chain().focus().undo().run()}
-                            style={{ 
-                              padding: '5px 10px',
-                              borderRadius: '4px',
-                              border: '1px solid #ccc'
-                            }}
-                          >
-                            ↺ Undo
-                          </button>
-                          <button 
-                            onClick={() => editor.chain().focus().redo().run()}
-                            style={{ 
-                              padding: '5px 10px',
-                              borderRadius: '4px',
-                              border: '1px solid #ccc'
-                            }}
-                          >
-                            ↻ Redo
-                          </button>
-                        </div>
-                      )}
-
-                      {editor && (
-                        <EditorContent 
-                          editor={editor} 
-                          className="tiptap-editor"
-                          style={{
-                            border: '1px solid #ccc',
-                            borderRadius: '6px',
-                            minHeight: '150px',
-                            padding: '10px',
-                            marginBottom: '10px'
-                          }}
-                        />
-                      )}
-
-                      {/* Multi Attachment Upload */}
-                      <div style={{ margin: '10px 0' }}>
-                        <label style={{ fontSize: '0.9em', fontWeight: 'bold' }}>📎 Attach files:
-                          <input 
-                            type="file" 
-                            multiple
-                            onChange={(e) => {
-                              const newFiles = Array.from(e.target.files || []);
-                              setAttachments(thread.id, [...attachments, ...newFiles]);
-                            }} 
-                            style={{ display: 'block', marginTop: '6px' }} 
-                          />
-                        </label>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', marginTop: '10px', gap: '10px' }}>
-                          {attachments.map((file, index) => (
-                            <div key={index} style={{ 
-                              border: '1px solid #ccc', 
-                              borderRadius: '4px', 
-                              padding: '4px 8px', 
-                              background: '#f0f0f0',
-                              display: 'flex',
-                              alignItems: 'center'
-                            }}>
-                              <span style={{ marginRight: '5px' }}>📄</span>
-                              {file.name}
-                              <button 
-                                onClick={() => setAttachments(thread.id, attachments.filter((_, i) => i !== index))} 
-                                style={{ 
-                                  marginLeft: '8px', 
-                                  color: 'red', 
-                                  background: 'none', 
-                                  border: 'none', 
-                                  cursor: 'pointer',
-                                  fontSize: '16px',
-                                  fontWeight: 'bold'
-                                }}
+                            
+                            <div className="button-group">
+                              <button
+                                onClick={() => sendReply(thread.id, thread.messages[0].from, thread.subject, false)}
+                                className="action-button send"
                               >
-                                ×
+                                <span className="button-icon">✉️</span>
+                                Send Reply
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setPendingReplyMeta(thread.id, {
+                                    threadId: thread.id,
+                                    to: thread.messages[0].from,
+                                    subject: thread.subject,
+                                  });
+                                }}
+                                className="action-button preview"
+                              >
+                                <span className="button-icon">👁️</span>
+                                Preview
+                              </button>
+                              <button
+                                onClick={() => sendReply(thread.id, thread.messages[0].from, thread.subject, true)}
+                                className="action-button draft"
+                              >
+                                <span className="button-icon">💾</span>
+                                Save Draft
                               </button>
                             </div>
-                          ))}
-                        </div>
-                      </div>
-                      
-                      <div style={{ display: 'flex', gap: '10px', marginTop: '15px' }}>
-                        <button
-                          onClick={() => sendReply(thread.id, thread.messages[0].from, thread.subject, false)}
-                          style={{ 
-                            padding: '8px 16px', 
-                            backgroundColor: '#4caf50', 
-                            color: '#fff', 
-                            border: 'none', 
-                            borderRadius: '6px', 
-                            cursor: 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '5px'
-                          }}
-                        >
-                          <span style={{ fontSize: '1.2em' }}>✉️</span>
-                          Send Reply
-                        </button>
-                        <button
-                          onClick={() => {
-                            setPendingReplyMeta(thread.id, {
-                              threadId: thread.id,
-                              to: thread.messages[0].from,
-                              subject: thread.subject,
-                            });
-                          }}
-                          style={{ 
-                            padding: '8px 16px', 
-                            backgroundColor: '#2196f3', 
-                            color: '#fff', 
-                            border: 'none', 
-                            borderRadius: '6px', 
-                            cursor: 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '5px'
-                          }}
-                        >
-                          <span style={{ fontSize: '1.2em' }}>👁️</span>
-                          Preview
-                        </button>
-                        <button
-                          onClick={() => sendReply(thread.id, thread.messages[0].from, thread.subject, true)}
-                          style={{ 
-                            padding: '8px 16px', 
-                            backgroundColor: '#ff9800', 
-                            color: '#fff', 
-                            border: 'none', 
-                            borderRadius: '6px', 
-                            cursor: 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '5px'
-                          }}
-                        >
-                          <span style={{ fontSize: '1.2em' }}>💾</span>
-                          Save Draft
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {threadState.showPreview && threadState.pendingReplyMeta && (
-                  <div style={{ 
-                    position: 'fixed', 
-                    top: 0, 
-                    left: 0, 
-                    width: '100%', 
-                    height: '100%', 
-                    backgroundColor: 'rgba(0,0,0,0.5)',
-                    display: 'flex',
-                    justifyContent: 'center',
-                    alignItems: 'center',
-                    zIndex: 1000
-                  }}>
-                    <div style={{ 
-                      backgroundColor: 'white', 
-                      border: '1px solid #ccc',
-                      padding: '20px', 
-                      borderRadius: '10px', 
-                      boxShadow: '0 4px 8px rgba(0,0,0,0.2)',
-                      width: '80%',
-                      maxWidth: '800px',
-                      maxHeight: '80vh',
-                      overflow: 'auto'
-                    }}>
-                      <h3 style={{ borderBottom: '1px solid #eee', paddingBottom: '10px' }}>📨 Preview Your Reply</h3>
-                      <div style={{ margin: '15px 0' }}>
-                        <div style={{ marginBottom: '5px' }}><strong>To:</strong> {threadState.pendingReplyMeta.to}</div>
-                        <div style={{ marginBottom: '5px' }}><strong>Subject:</strong> {threadState.pendingReplyMeta.subject}</div>
-                      </div>
-                      <div style={{ 
-                        padding: '15px', 
-                        border: '1px solid #eee',
-                        borderRadius: '6px',
-                        backgroundColor: '#fafafa' 
-                      }} dangerouslySetInnerHTML={{ __html: editor ? editor.getHTML() : '' }} />
-                      
-                      {attachments.length > 0 && (
-                        <div style={{ marginTop: '15px' }}>
-                          <div style={{ fontWeight: 'bold', marginBottom: '5px' }}>Attachments:</div>
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
-                            {attachments.map((file, index) => (
-                              <div key={index} style={{ 
-                                padding: '5px 10px', 
-                                backgroundColor: '#f0f0f0', 
-                                borderRadius: '4px',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '5px'
-                              }}>
-                                <span role="img" aria-label="file">📄</span> {file.name}
-                              </div>
-                            ))}
                           </div>
                         </div>
                       )}
-                      
-                      <div style={{ marginTop: '15px', display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
-                        <button 
-                          onClick={() => setShowPreview(thread.id, false)} 
-                          style={{ 
-                            padding: '8px 16px', 
-                            backgroundColor: '#e0e0e0', 
-                            border: 'none', 
-                            borderRadius: '6px', 
-                            cursor: 'pointer' 
-                          }}
-                        >
-                          Cancel
-                        </button>
-                        <button 
-                          onClick={() => {
-                            sendReply(threadState.pendingReplyMeta.threadId, threadState.pendingReplyMeta.to, threadState.pendingReplyMeta.subject, false);
-                            setShowPreview(thread.id, false);
-                          }} 
-                          style={{ 
-                            padding: '8px 16px', 
-                            backgroundColor: '#4caf50', 
-                            color: 'white', 
-                            border: 'none', 
-                            borderRadius: '6px', 
-                            cursor: 'pointer' 
-                          }}
-                        >
-                          Send
-                        </button>
-                      </div>
+
+                      {/* Preview Modal */}
+                      {showPreviews[thread.id] && pendingReplies[thread.id] && (
+                        <div className="preview-modal">
+                          <div className="preview-card">
+                            <h3 className="preview-title">📨 Preview Your Reply</h3>
+                            <div className="preview-meta">
+                              <div className="preview-meta-item"><strong>To:</strong> {pendingReplies[thread.id].to}</div>
+                              <div className="preview-meta-item"><strong>Subject:</strong> {pendingReplies[thread.id].subject}</div>
+                            </div>
+                            <div className="preview-content" 
+                              dangerouslySetInnerHTML={{ __html: editorContents[thread.id] || '' }} />
+                            
+                            {threadAttachments.length > 0 && (
+                              <div className="preview-attachments">
+                                <div className="attachments-title">Attachments:</div>
+                                <div className="attachment-list">
+                                  {threadAttachments.map((file, index) => (
+                                    <div key={index} className="attachment-item">
+                                      <span role="img" aria-label="file">📄</span> {file.name}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            
+                            <div className="preview-actions">
+                              <button 
+                                onClick={() => togglePreview(thread.id, false)} 
+                                className="cancel-button"
+                              >
+                                Cancel
+                              </button>
+                              <button 
+                                onClick={() => {
+                                  sendReply(pendingReplies[thread.id].threadId, pendingReplies[thread.id].to, pendingReplies[thread.id].subject, false);
+                                  togglePreview(thread.id, false);
+                                }} 
+                                className="send-button"
+                              >
+                                Send
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  </div>
-                )}
+                  );
+                })}
               </div>
-            );
-          })}
+            </div>
+          ))}
         </div>
       ) : (
-        <div style={{ 
-          textAlign: 'center', 
-          padding: '40px', 
-          backgroundColor: '#f5f5f5', 
-          borderRadius: '10px',
-          border: '1px dashed #ccc'
-        }}>
-          {followEmails.length > 0 ? (
-            <p>📨 Loading emails...</p>
-          ) : (
-            <p>📭 No emails to show. Add an email address to follow above.</p>
-          )}
-        </div>
+        <div className="no-emails">
+        {followEmails.length > 0 ? (
+          <div className="loading-state">
+            <p>📨 {isLoading ? 'Loading emails...' : 'No emails found for the followed addresses.'}</p>
+            <button 
+              onClick={() => fetchFollowedEmails()} 
+              className="refresh-button"
+              disabled={isLoading}
+            >
+              {isLoading ? 'Loading...' : 'Refresh Emails'}
+            </button>
+          </div>
+        ) : (
+          <p>📭 No emails to show. Add an email address to follow above.</p>
+        )}
+      </div>
       )}
     </div>
   );
