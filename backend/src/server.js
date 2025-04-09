@@ -152,6 +152,47 @@ const replaceInlineImages = async (gmail, html, payload) => {
 
   return processedHtml;
 };
+
+const extractEmailAddress = (input) => {
+  // Regular expression to match email within angle brackets or standalone
+  const emailRegex = /<?([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>?/;
+  const match = input.match(emailRegex);
+  
+  if (match) {
+    return match[1]; // Return the captured email address
+  }
+  
+  // Fallback to trimming and basic validation
+  const trimmedEmail = input.trim();
+  return /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(trimmedEmail) 
+    ? trimmedEmail 
+    : null;
+};
+
+const verifySentMail = async (gmail, messageId) => {
+  try {
+    const message = await gmail.users.messages.get({
+      userId: 'me',
+      id: messageId,
+      format: 'metadata'
+    });
+
+    console.log('Sent Message Verification:', {
+      id: message.data.id,
+      threadId: message.data.threadId,
+      labelIds: message.data.labelIds,
+      snippet: message.data.snippet
+    });
+
+    return message.data;
+  } catch (error) {
+    console.error('Failed to verify sent message:', error);
+    return null;
+  }
+};
+
+// You can call this after sending the message
+// await verifySentMail(gmail, sendResponse.data.id);
 app.get('/api/oauth2callback', async (req, res) => {
   const { code } = req.query;
 
@@ -251,7 +292,7 @@ app.get('/api/session', async (req, res) => {
 
 
 app.post('/api/reply', async (req, res) => {
-  const { threadId, to, subject, message } = req.body;
+  const { to, subject, message, threadId, messageId, draft } = req.body;
   const token = req.cookies.token;
 
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
@@ -268,43 +309,76 @@ app.post('/api/reply', async (req, res) => {
 
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
-    // Build the raw message with rich content
+    const cleanEmail = extractEmailAddress(to);
+    
+    // Construct raw message with proper threading
     const rawMessage = Buffer.from(
       `From: ${user.email}\r\n` +
-      `To: ${to}\r\n` +
+      `To: ${cleanEmail}\r\n` +
       `Subject: ${subject}\r\n` +
-      `Content-Type: text/html; charset="UTF-8"\r\n\r\n` +
-      `${message}`  // Include HTML content for rich formatting
+      `Content-Type: text/html; charset="UTF-8"\r\n` +
+      `MIME-Version: 1.0\r\n` +
+      `In-Reply-To: ${messageId}\r\n` +
+      `References: ${messageId}\r\n\r\n` +
+      `${message}`
     ).toString('base64url');
 
-    // Save as draft or send
-    if (req.body.draft) {
-      await gmail.users.drafts.create({
-        userId: 'me',
-        requestBody: {
-          message: { raw: rawMessage },
-        }
+    try {
+      if (draft) {
+        const draftResponse = await gmail.users.drafts.create({
+          userId: 'me',
+          requestBody: {
+            message: { 
+              raw: rawMessage,
+              threadId: threadId // Include thread ID for drafts
+            }
+          }
+        });
+        res.json({ message: 'Draft saved!', draftId: draftResponse.data.id });
+      } else {
+        const sendResponse = await gmail.users.messages.send({
+          userId: 'me',
+          requestBody: { 
+            raw: rawMessage,
+            threadId: threadId // Include thread ID when sending
+          }
+        });
+        
+        // Fetch the full message to return complete details
+        const sentMessage = await gmail.users.messages.get({
+          userId: 'me',
+          id: sendResponse.data.id,
+          format: 'full'
+        });
+
+        res.json({ 
+          message: 'Reply sent!', 
+          messageId: sendResponse.data.id,
+          threadId: threadId,
+          sentMessage: {
+            id: sentMessage.data.id,
+            from: user.email,
+            to: cleanEmail,
+            subject: subject,
+            date: new Date().toISOString(),
+            body: message,
+            type: 'sent'
+          }
+        });
+      }
+    } catch (sendError) {
+      console.error('Gmail API Send Error:', sendError);
+      res.status(500).json({ 
+        error: 'Failed to send/save email', 
+        details: sendError.message 
       });
-      res.json({ message: 'Draft saved!' });
-    } else {
-      // Send the reply
-      // For replies, we don't need to specify threadId in the raw message
-      // Instead, Gmail API will handle threading properly using the threadId parameter
-      const result = await gmail.users.messages.send({
-        userId: 'me',
-        requestBody: {
-          raw: rawMessage,
-          // Don't include threadId in requestBody - it's not a valid parameter here
-        },
-        // Instead, we can use a thread ID if it's from the Gmail API
-        // If your threadId is actually a valid Gmail thread ID:
-        // threadId: threadId
-      });
-      res.json({ message: 'Reply sent!', messageId: result.data.id });
     }
   } catch (err) {
-    console.error('Reply failed:', err);
-    res.status(500).json({ error: 'Failed to send reply', details: err.message });
+    console.error('Reply process error:', err);
+    res.status(500).json({ 
+      error: 'Failed to process reply', 
+      details: err.message 
+    });
   }
 });
 app.get('/api/emails', async (req, res) => {
@@ -630,7 +704,64 @@ app.post('/api/emails/followed', async (req, res) => {
   }
 });
 // Add this to your server.js
+app.get('/api/thread/:threadId', async (req, res) => {
+  const token = req.cookies.token;
+  const threadId = req.params.threadId;
 
+  if (!token) return res.status(401).json({ error: 'Unauthorized' });
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findOne({ googleId: decoded.googleId });
+
+    if (!user || !user.refreshToken) {
+      return res.status(401).json({ error: 'No refresh token found' });
+    }
+
+    oauth2Client.setCredentials({ refresh_token: user.refreshToken });
+    const { credentials } = await oauth2Client.refreshAccessToken();
+    oauth2Client.setCredentials(credentials);
+
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+    const { data: thread } = await gmail.users.threads.get({
+      userId: 'me',
+      id: threadId,
+    });
+
+    const messages = thread.messages.map((msg) => {
+      const headers = msg.payload.headers;
+      const from = headers.find(h => h.name === 'From')?.value || 'Unknown sender';
+      const to = headers.find(h => h.name === 'To')?.value || 'Unknown recipient';
+      const subject = headers.find(h => h.name === 'Subject')?.value || '(no subject)';
+      const date = new Date(parseInt(msg.internalDate)).toISOString();
+      const body = extractBodyFromPayload(msg.payload);
+      const messageId = headers.find(h => h.name === 'Message-ID')?.value;
+
+      return { 
+        id: msg.id,
+        messageId,
+        from, 
+        to,
+        subject, 
+        date, 
+        body,
+      };
+    });
+
+    res.json({
+      id: threadId,
+      subject: messages[0]?.subject || '(no subject)',
+      messages,
+    });
+  } catch (err) {
+    console.error('Thread fetch error:', err);
+    res.status(500).json({ 
+      error: 'Failed to fetch thread', 
+      details: err.message 
+    });
+  }
+});
 // Get followed emails
 app.get('/api/followed-emails', async (req, res) => {
   const token = req.cookies.token;
@@ -707,7 +838,7 @@ app.post('/api/emails/followed', async (req, res) => {
 });
 app.post('/api/email-threads', async (req, res) => {
   const token = req.cookies.token;
-  const { fromEmails = [], toEmails = [] } = req.body;
+  const { fromEmails = [], toEmails = [], limit = 50, offset = 0 } = req.body;
 
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
 
@@ -725,130 +856,92 @@ app.post('/api/email-threads', async (req, res) => {
 
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
-    const allThreads = [];
+    const fetchThreadsWithTimeout = async (emails, type) => {
+      const threads = [];
+      for (const email of emails) {
+        try {
+          const { data: threadList } = await gmail.users.threads.list({
+            userId: 'me',
+            q: `${type}:${email}`,
+            maxResults: limit
+          });
 
-    // Fetch threads for "from" emails
-    for (const email of fromEmails) {
-      const { data: threadList } = await gmail.users.threads.list({
-        userId: 'me',
-        q: `from:${email}`,
-        maxResults: 50
-      });
-
-      if (threadList.threads) {
-        const threadsData = await Promise.all(
-          threadList.threads.map(async (thread) => {
-            const { data: fullThread } = await gmail.users.threads.get({
-              userId: 'me',
-              id: thread.id,
-            });
-
-            const messages = await Promise.all(fullThread.messages.map(async (msg) => {
-              const headers = msg.payload.headers;
-              const from = headers.find(h => h.name === 'From')?.value || 'Unknown sender';
-              const to = headers.find(h => h.name === 'To')?.value || 'Unknown recipient';
-              const subject = headers.find(h => h.name === 'Subject')?.value || '(no subject)';
-              const date = new Date(parseInt(msg.internalDate)).toISOString();
-              
-              let body = extractBodyFromPayload(msg.payload);
-              
-              // Process inline images
-              try {
-                body = await replaceInlineImages(gmail, body, {
-                  ...msg.payload,
-                  id: msg.id
+          if (threadList.threads) {
+            const threadsData = await Promise.all(
+              threadList.threads.map(async (thread) => {
+                const { data: fullThread } = await gmail.users.threads.get({
+                  userId: 'me',
+                  id: thread.id,
                 });
-              } catch (imageError) {
-                console.error('Image processing error:', imageError);
-              }
 
-              return { 
-                id: msg.id,
-                from, 
-                to,
-                subject, 
-                date, 
-                body,
-                type: 'from'
-              };
-            }));
+                // Include all messages in the thread
+                const messages = fullThread.messages.map((msg) => {
+                  const headers = msg.payload.headers;
+                  const messageId = headers.find(h => h.name === 'Message-ID')?.value;
+                  const from = headers.find(h => h.name === 'From')?.value || 'Unknown sender';
+                  const to = headers.find(h => h.name === 'To')?.value || 'Unknown recipient';
+                  const subject = headers.find(h => h.name === 'Subject')?.value || '(no subject)';
+                  const date = new Date(parseInt(msg.internalDate)).toISOString();
+                  const body = extractBodyFromPayload(msg.payload);
 
-            return {
-              id: thread.id,
-              subject: messages[0]?.subject || '(no subject)',
-              messages,
-            };
-          })
-        );
-
-        allThreads.push(...threadsData);
-      }
-    }
-
-    // Similar modification for "to" emails section
-    for (const email of toEmails) {
-      const { data: threadList } = await gmail.users.threads.list({
-        userId: 'me',
-        q: `to:${email}`,
-        maxResults: 50
-      });
-
-      if (threadList.threads) {
-        const threadsData = await Promise.all(
-          threadList.threads.map(async (thread) => {
-            const { data: fullThread } = await gmail.users.threads.get({
-              userId: 'me',
-              id: thread.id,
-            });
-
-            const messages = await Promise.all(fullThread.messages.map(async (msg) => {
-              const headers = msg.payload.headers;
-              const from = headers.find(h => h.name === 'From')?.value || 'Unknown sender';
-              const to = headers.find(h => h.name === 'To')?.value || 'Unknown recipient';
-              const subject = headers.find(h => h.name === 'Subject')?.value || '(no subject)';
-              const date = new Date(parseInt(msg.internalDate)).toISOString();
-              
-              let body = extractBodyFromPayload(msg.payload);
-              
-              // Process inline images
-              try {
-                body = await replaceInlineImages(gmail, body, {
-                  ...msg.payload,
-                  id: msg.id
+                  return { 
+                    id: msg.id,
+                    messageId,
+                    from, 
+                    to,
+                    subject, 
+                    date, 
+                    body,
+                    type: type
+                  };
                 });
-              } catch (imageError) {
-                console.error('Image processing error:', imageError);
-              }
 
-              return { 
-                id: msg.id,
-                from, 
-                to,
-                subject, 
-                date, 
-                body,
-                type: 'to'
-              };
-            }));
+                return {
+                  id: thread.id,
+                  subject: messages[0]?.subject || '(no subject)',
+                  messages,
+                };
+              })
+            );
 
-            return {
-              id: thread.id,
-              subject: messages[0]?.subject || '(no subject)',
-              messages,
-            };
-          })
-        );
-
-        allThreads.push(...threadsData);
+            threads.push(...threadsData);
+          }
+        } catch (error) {
+          console.error(`Failed to fetch threads for ${email}:`, error);
+        }
       }
-    }
+      return threads;
+    };
 
-    res.json({ threads: allThreads });
+    // Fetch threads with custom logic to include all messages
+    const fromThreads = await fetchThreadsWithTimeout(fromEmails, 'from');
+    const toThreads = await fetchThreadsWithTimeout(toEmails, 'to');
+
+    // Combine and deduplicate threads
+    const combinedThreads = [...fromThreads, ...toThreads];
+    const uniqueThreads = combinedThreads.reduce((acc, thread) => {
+      const existingThread = acc.find(t => t.id === thread.id);
+      if (!existingThread) {
+        acc.push(thread);
+      } else {
+        // Merge messages if thread already exists
+        existingThread.messages = [
+          ...existingThread.messages,
+          ...thread.messages
+        ];
+      }
+      return acc;
+    }, []);
+
+    res.json({ 
+      threads: uniqueThreads,
+      totalCount: uniqueThreads.length
+    });
   } catch (err) {
     console.error('Thread fetch error:', err);
     res.status(500).json({ 
       error: 'Failed to fetch email threads', 
-      details: err.message,
+      details: err.message 
     });
   }
 });
